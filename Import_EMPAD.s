@@ -13,7 +13,7 @@
 //   / number of steps (nm); detector axes use <calibrated_pixelsize> if present, else pixels.
 // - Raw format: float32 frames of 130 rows x 128 columns; rows 128-129 are per-frame metadata and
 //   are dropped.
-// Note: for large datasets DM needs about twice the data size in memory while importing.
+// Memory: the data is read one scan row at a time, so DM needs only about one copy of the dataset.
 
 number kDetX = 128
 number kDetY = 130      // 128 detector rows + 2 metadata rows
@@ -141,14 +141,19 @@ if (!found)
 }
 Result("\nEMPAD: " + nx + " x " + ny + " scan positions, raw file " + rawPath)
 
-// ---- read all frames (130 rows) into a 4D image: dims = qx, qy, scan x, scan y ----
-image raw4d := RealImage("EMPAD raw", 4, kDetX, kDetY, nx, ny)
-ImageReadImageDataFromStream(raw4d, stream, 0)     // 0 = default endianness (EMPAD files are little endian, as on Windows PCs)
+// ---- read the frames one scan row at a time into a small buffer and keep only the 128 detector rows ----
+// (this avoids holding a second, uncropped copy of the whole dataset in memory)
+// final image dims = qx, qy, scan x, scan y
+image img4d := RealImage("EMPAD 4D-STEM", 4, kDetX, kDetYCrop, nx, ny)
+image rowBuf := RealImage("EMPAD scan row", 4, kDetX, kDetY, nx)       // nx frames of 128 x 130
+number yy
+for (yy = 0; yy < ny; yy++)
+{
+	ImageReadImageDataFromStream(rowBuf, stream, 0)     // 0 = default endianness (EMPAD files are little endian, as on Windows PCs)
+	img4d.SliceN(4, 3, 0,0,0,yy,  0,kDetX,1,  1,kDetYCrop,1,  2,nx,1) = rowBuf.SliceN(3, 3, 0,0,0,  0,kDetX,1,  1,kDetYCrop,1,  2,nx,1)
+}
 CloseFile(fileID)
-
-// ---- drop the two metadata rows (note '=': SliceN returns a view, we want an independent copy) ----
-image img4d = raw4d.SliceN(4, 4, 0,0,0,0,  0,kDetX,1,  1,kDetYCrop,1,  2,nx,1,  3,ny,1)
-DeleteImage(raw4d)
+DeleteImage(rowBuf)
 img4d.SetName(baseName + " (EMPAD 4D-STEM)")
 
 // ---- calibration (following the logic of rsciio's EMPAD reader) ----
